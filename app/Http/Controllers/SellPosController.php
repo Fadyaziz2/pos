@@ -593,6 +593,7 @@ class SellPosController extends Controller
 
                     //Auto send notification
                     $whatsapp_link = $this->notificationUtil->autoSendNotification($business_id, 'new_sale', $transaction, $transaction->contact);
+                    $this->notificationUtil->sendInvoicePaymentSms($transaction);
 
                     // zatca instant sync if status final type sell
                     if($transaction->type == 'sell'){
