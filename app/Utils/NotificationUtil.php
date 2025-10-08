@@ -10,9 +10,12 @@ use App\Notifications\SupplierNotification;
 use App\NotificationTemplate;
 use App\Restaurant\Booking;
 use App\System;
+use App\TransactionPayment;
 use Config;
 use Notification;
 use App\Contact;
+use GuzzleHttp\Client;
+use Illuminate\Support\Facades\DB;
 
 
 class NotificationUtil extends Util
@@ -96,6 +99,88 @@ class NotificationUtil extends Util
         }
 
         return $whatsapp_link;
+    }
+
+    /**
+     * Sends an SMS with invoice payment details to the contact linked to the transaction.
+     *
+     * @param  \App\Transaction  $transaction
+     * @return bool
+     */
+    public function sendInvoicePaymentSms($transaction)
+    {
+        try {
+            if (!empty($transaction->is_suspend)) {
+                return false;
+            }
+
+            $contact = $transaction->contact;
+
+            if (empty($contact) || empty($contact->mobile)) {
+                return false;
+            }
+
+            $mobile_number = preg_replace('/[^0-9]/', '', $contact->mobile);
+
+            if (empty($mobile_number)) {
+                return false;
+            }
+
+            $business = Business::with('currency')->find($transaction->business_id);
+
+            $currency_symbol = optional(optional($business)->currency)->symbol;
+            $currency_code = optional(optional($business)->currency)->code;
+
+            $total_paid = TransactionPayment::where('transaction_id', $transaction->id)
+                ->select(DB::raw('SUM(IF( is_return = 0, amount, amount*-1)) as total_paid'))
+                ->value('total_paid');
+
+            $total_paid = (float) ($total_paid ?? 0);
+            $due = max($transaction->final_total - $total_paid, 0);
+
+            $formatted_paid = number_format($total_paid, 2);
+            $formatted_due = number_format($due, 2);
+
+            if (! empty($currency_symbol)) {
+                $formatted_paid = $currency_symbol.$formatted_paid;
+                $formatted_due = $currency_symbol.$formatted_due;
+            } elseif (! empty($currency_code)) {
+                $formatted_paid = $formatted_paid.' '.$currency_code;
+                $formatted_due = $formatted_due.' '.$currency_code;
+            }
+
+            $invoice_url = $this->getInvoiceUrl($transaction->id, $transaction->business_id);
+            $invoice_reference = $transaction->invoice_no ?? $transaction->ref_no ?? $transaction->id;
+
+            $message = "Invoice {$invoice_reference}: payment received {$formatted_paid}.";
+
+            if ($due > 0) {
+                $message .= " Remaining balance {$formatted_due}.";
+            } else {
+                $message .= ' Thank you.';
+            }
+
+            $message .= " View invoice: {$invoice_url}";
+
+            $client = new Client(['timeout' => 10]);
+
+            $client->get('https://smsapi.theblunet.com:8441/websmpp/websms', [
+                'query' => [
+                    'user' => 'microjo',
+                    'pass' => 'Mic0@25!',
+                    'sid' => 'micro jo',
+                    'mno' => $mobile_number,
+                    'type' => 4,
+                    'text' => $message,
+                ],
+            ]);
+
+            return true;
+        } catch (\Exception $e) {
+            \Log::warning('Unable to send invoice SMS. File:'.$e->getFile().' Line:'.$e->getLine().' Message:'.$e->getMessage());
+
+            return false;
+        }
     }
 
     /**
